@@ -1,0 +1,11 @@
+Explanation of terminal output:
+1. Process state
+2. Remaining steps
+3. Remaining memory
+4. Current instruction
+<-|(1) NORMAL¦(2) 975¦(3) 1001¦ (4) PUSH|
+
+Processes can be sandboxed recursively, since the language
+is single-threaded and deterministic the runtime state is
+always a chain of nested processes. Example:
+<-|NORMAL¦966¦1007¦RUN|<-|NORMAL¦49¦49¦MEMORYLEN|
