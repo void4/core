@@ -21,7 +21,7 @@ while True:
     else:
         state = s(state)
         break
-
+    print(state)
     state = s(state)
 
     state = run(state, 1000, 1000, debug=False)
@@ -35,7 +35,8 @@ while True:
 
         state = s(state)
     else:
-        print("error")
+        print(state[MEMORY])
+        print("NORETURN")
         exit(1)
 #print(d(state))
 

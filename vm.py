@@ -1,25 +1,30 @@
-from hashlib import sha256
 
 BYTESIZE = 32
 WORDSIZE = 8*BYTESIZE
 WMAX = 2**WORDSIZE
 WMASK = WMAX-1
 
-STATUS, REC, GAS, MEM, IP, LENCODE, LENSTACK, LENMAP, LENMEMORY, CODE, STACK, MAP, MEMORY = range(13)
+from crypto import hashit, tob, fromb, genkey, verify
+
+STATUS, REC, GAS, MEM, IP, CODE, STACK, MAP, MEMORY = range(9)
+F_STATUS, F_REC, F_GAS, F_MEM, F_IP, F_LENCODE, F_LENSTACK, F_LENMAP, F_LENMEMORY, F_CODE, F_STACK, F_MAP, F_MEMORY = range(13)
 
 NORMAL, FROZEN, VOLHALT, VOLRETURN, OOG, OOC, OOS, OOM, OOB, UOC, RECURSE = range(11)
 STATI = ["NORMAL", "FROZEN", "VOLHALT", "VOLRETURN", "OUTOFGAS", "OUTOFCODE", "OUTOFSTACK", "OUTOFMEMORY", "OUTOFBOUNDS", "UNKNOWNCODE", "RUN"]
 
-HALT, RETURN, YIELD, RUN, JUMP, JZ, PUSH, POP, DUP, FLIP, KEYSET, KEYGET, KEYDEL, STACKLEN, MEMORYLEN, AREALEN, READ, WRITE, AREA, DEAREA, ALLOC, DEALLOC, ADD, SUB, NOT, MUL, DIV, MOD, SHA256 = range(29)
+HALT, RETURN, YIELD, RUN, JUMP, JZ, PUSH, POP, DUP, FLIP, KEYSET, KEYGET, KEYDEL, STACKLEN, MEMORYLEN, AREALEN, READ, WRITE, AREA, DEAREA, ALLOC, DEALLOC, ADD, SUB, NOT, MUL, DIV, MOD, SHA256, ECVERIFY = range(30)
 
 REQS = [
     # Name, Instruction length, Required Stack Size, Stack effect
     ["HALT",1,0,0],
     ["RETURN",1,0,0],
     ["YIELD",1,0,0],
+
     ["RUN",1,3,-3],
+
     ["JUMP",1,1,-1],
     ["JZ",1,2,-2],
+
     ["PUSH",2,0,1],
     ["POP",1,0,0],
     ["DUP",1,0,1],
@@ -28,27 +33,32 @@ REQS = [
     ["KEYSET",1,2,-2],
     ["KEYGET",1,1,0],
     ["KEYDEL",1,1,-1],
+
     ["STACKLEN",1,0,1],
     ["MEMORYLEN",1,0,1],
     ["AREALEN",1,1,0],
+
     ["READ",1,2,-1],
     ["WRITE",1,3,-3],
+
     ["AREA",1,0,1],
     ["DEAREA",1,1,-1],#!use after free!
     ["ALLOC",1,2,-2],
     ["DEALLOC",1,2,-2],
+
     ["ADD",1,2,-1],
     ["SUB",1,2,-1],
     ["NOT",1,1,0],
     ["MUL",1,2,-1],
     ["DIV",1,2,-1],
     ["MOD",1,2,-1],
+
     ["SHA256",1,1,0],
 ]
 
 def s(state):
     """Flattens and serializes the nested state structure"""
-    flat = state[:LENCODE]
+    flat = state[:CODE]
     flat += [len(state[CODE])]
     flat += [len(state[STACK])]
     flat += [len(state[MAP]) * 2]
@@ -64,21 +74,21 @@ def s(state):
 
 def d(state):
     """Deserializes and restores the runtime state structure from the flat version"""
-    sharp = state[:LENMEMORY+1]
-    lencode = state[LENCODE]
-    lenstack = state[LENSTACK]
-    lenmap = state[LENMAP]
-    lenmemory = state[LENMEMORY]
+    sharp = state[:F_LENCODE]
+    lencode = state[F_LENCODE]
+    lenstack = state[F_LENSTACK]
+    lenmap = state[F_LENMAP]
+    lenmemory = state[F_LENMEMORY]
 
-    sharp.append(state[LENMEMORY+1:LENMEMORY+1+lencode])
-    sharp.append(state[LENMEMORY+1+lencode:LENMEMORY+1+lencode+lenstack])
-    hmap = state[LENMEMORY+1+lencode+lenstack:LENMEMORY+1+lencode+lenstack+lenmap]
+    sharp.append(state[F_LENMEMORY+1:F_LENMEMORY+1+lencode])
+    sharp.append(state[F_LENMEMORY+1+lencode:F_LENMEMORY+1+lencode+lenstack])
+    hmap = state[F_LENMEMORY+1+lencode+lenstack:F_LENMEMORY+1+lencode+lenstack+lenmap]
     hmap = list(zip(hmap[::2], hmap[1::2]))
     sharp.append(hmap)
 
     sharp.append([])
     #print(lencode, lenstack, lenmemory)
-    index = LENMEMORY+1+lencode+lenstack+lenmap
+    index = F_LENMEMORY+1+lencode+lenstack+lenmap
     for area in range(lenmemory):
         lenarea = state[index]
         sharp[-1].append(state[index+1:index+1+lenarea])
@@ -194,43 +204,41 @@ def step(state):
             break
 
         # Check resources recursively
-        error = True
-        for ps in states:
-            # Check if current instruction has enough memory for stack effects
-            p = ps[0]
+        def checkResources():
+            nonlocal states
+            error = True
+            for ps in states:
+                # Check if current instruction has enough memory for stack effects
+                p = ps[0]
 
-            # Compare memory use (combined, not separately)
-            def getMemoryUse(instr):
-                # XXX maximum working size or end-start?
-                if instr == ALLOC:
-                    return p[STACK][-1]
-                elif instr == DEALLOC:
-                    return -p[STACK][-1]
+                # Compare memory use (combined, not separately)
+                def getMemoryUse(instr):
+                    # XXX maximum working size or end-start?
+                    if instr == ALLOC:
+                        return p[STACK][-1]
+                    elif instr == DEALLOC:
+                        return -p[STACK][-1]
+                    else:
+                        return 0
+                if instr != RUN:
+                    p[GAS] -= 1 # RUN RUN RUN?
+                    totalmemoryuse = reqs[3] + getMemoryUse(instr)
                 else:
-                    return 0
-            if instr != RUN:
-                p[GAS] -= 1 # RUN RUN RUN?
-                totalmemoryuse = reqs[3] + getMemoryUse(instr)
+                    totalmemoryuse = 0#not correct, run pops from stack, but not always
+                if p[MEM] < totalmemoryuse:
+                    p[STATUS] = OOM
+                    break
+                p[MEM] -= totalmemoryuse
             else:
-                totalmemoryuse = 0#not correct, run pops from stack, but not always
-            if p[MEM] < totalmemoryuse:
-                p[STATUS] = OOM
-                break
-            p[MEM] -= totalmemoryuse
-        else:
-            error = False
+                error = False
 
-        if error:
-            break
+            return error
 
         if instr == RUN:
             area, gas, mem = state[STACK][-3:]
             if validarea(area) and len(state[MEMORY][area]) > 4:#HEADERLEN
                 child = state[MEMORY][area]
-                # Is this even required? nope.
-                #print(child[STATUS], FROZEN)
 
-                #if child[STATUS] == FROZEN:
                 if state[REC] == 0:
                     child[STATUS] = NORMAL
                     child[GAS] = gas
@@ -248,12 +256,18 @@ def step(state):
                     #print("<<<")
                 else:
                     #child[STATUS] = FROZEN
+                    #may not be required
+                    if checkResources():
+                        break
                     state[REC] = 0
                     next()
             else:
                 next()
         else:
-            print("".join(["<-|%s¦%i¦%i¦%s|" % (STATI[states[i][0][STATUS]], states[i][0][GAS], states[i][0][MEM], REQS[states[i][0][CODE][states[i][0][IP]]][0]) for i in range(len(states))]))
+            #print("".join(["<-|%s¦%i¦%i¦%s|" % (STATI[states[i][0][STATUS]], states[i][0][GAS], states[i][0][MEM], REQS[states[i][0][CODE][states[i][0][IP]]][0]) for i in range(len(states))]))
+
+            if checkResources():
+                break
 
             if instr == HALT:
                 state[STATUS] = VOLHALT
@@ -382,12 +396,11 @@ def step(state):
                 state[STACK][-2] = op1 % op2
                 next()
             elif instr == SHA256:
-                bytearr = state[STACK][-1].to_bytes(BYTESIZE, byteorder="big", signed=False)
-                digest = sha256(bytearr)
-                #print(bytearr)
-                #print(digest.hexdigest())
-                state[STACK][-1] = int.from_bytes(digest.digest(), byteorder="big", signed=False)
+                state[STACK][-1] = wrapint(state[STACK][-1], hashit)
                 next()
+            elif instr == ECVERIFY:
+                #if verify(state[STACK][-1], ):
+                pass
             else:
                 state[STATUS] = UOC
 
@@ -404,11 +417,13 @@ from time import sleep
 
 import tkinter as tk
 from PIL import ImageTk, Image
-root = tk.Tk()
 
+"""
+root = tk.Tk()
 img = ImageTk.PhotoImage(Image.open("test.png"))
 panel = tk.Label(root, image=img)
 panel.pack(side="bottom", fill="both", expand="yes")
+"""
 
 def show(state):
     SIZE = 32
@@ -428,9 +443,13 @@ def run(state, gas=100, mem=100, debug=False):
     state[GAS] = gas
     state[MEM] = mem
     while True:
-        sleep(0.1)
-        show(state)
-
+        #sleep(0.1)
+        #show(state)
+        #import timeit
+        #print(state)
+        #t = timeit.timeit("step([0, 0, 1000, 1000, 0, 98, 0, 0, 3, 6, 1, 15, 8, 6, 1, 9, 6, 1, 6, 2, 20, 6, 1, 6, 8, 6, 1, 6, 8, 16, 6, 1, 22, 17, 6, 1, 17, 8, 6, 1, 22, 6, 1, 9, 14, 6, 1, 23, 6, 0, 16, 17, 7, 6, 1, 6, 50, 6, 50, 3, 6, 1, 6, 1, 15, 6, 1, 23, 16, 6, 1, 6, 2, 21, 6, 1, 6, 8, 6, 1, 6, 8, 16, 6, 1, 23, 17, 14, 6, 1, 23, 8, 8, 19, 18, 6, 1, 20, 9, 6, 0, 9, 17, 2, 6, 0, 4, 0, 37, 1, 0, 0, 0, 0, 27, 0, 0, 1, 14, 6, 1, 23, 6, 0, 16, 6, 1, 22, 14, 6, 1, 23, 8, 8, 19, 18, 6, 1, 20, 9, 6, 0, 9, 17, 1, 0, 1, 1])", "from vm import step", number=100000)
+        #print(t)
+        #print(d(state)[MEMORY])
         if state[STATUS] not in [NORMAL, RECURSE]:
             if debug:
                 dstate = d(state)
@@ -443,6 +462,3 @@ def run(state, gas=100, mem=100, debug=False):
             #print(out[STACK], out[MEMORY])
             #sleep(0.1)
     return state
-
-def inject(code):
-    return s([NORMAL, 0, 0, 0, code, [], []])
