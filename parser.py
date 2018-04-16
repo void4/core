@@ -36,6 +36,36 @@ def prep(code):
     return lines
 
 
+class Allocator:
+    def __init__(self):
+        self.mem = []
+        self.var = {}
+    def reserve(self, obj=None):
+        memlen = len(self.mem)
+        if obj is None:
+            self.mem += [1]
+        else:
+            self.mem += obj
+        return memlen
+    def getOrReserveVariable(self, name):
+        if not name in self.var:
+            self.var[name] = self.reserve()
+        return self.var[name]
+
+class ComplexValue:
+    def __init__(self, value):
+        self.value = value
+
+def varint(node):
+    if isinstance(node, list) or isinstance(node, Meta):
+        return node
+    if isinstance(node, str):
+        return ComplexValue(node.value)
+    if node.data == 'number':
+        if node.children[0].type == 'DEC_NUMBER':
+            return ['PUSH %i' % int(node.children[0].value)]
+        raise Exception('Fail')
+
 class Meta:
 
     def __init__(self):
@@ -49,18 +79,30 @@ class Meta:
         return self
 
     def final(self):
-        header = [         0, 0, 0, 0, 0]
+        header = [0, 0, 0, 0, 0]
         print(self.code)
         newcode = []
+        allocator = Allocator()
         for instruction in self.code:
             if isinstance(instruction, str):
-                continue
+                newcode.append(instruction)
             if isinstance(instruction, Assign):
                 print('Assign', instruction.a, instruction.b)
+
+                newcode.append("PUSH 0")
+                pointer = allocator.getOrReserveVariable(instruction.a)
+                newcode.append("PUSH %i" % pointer)
+                if isinstance(instruction.b, str):
+                    objpointer = allocator.reserve(list(instruction.b.encode("utf8")))
+                    newcode.append("PUSH %i" % objpointer)
+                else:
+                    newcode += varint(instruction.b)
+                newcode.append("WRITE")
             else:
                 raise Exception('Unknown instruction type')
 
-        memory = []
+        memory = [allocator.mem]
+        print(newcode)
         code = assemble(newcode)
         stack = []
         mapp = []
@@ -95,16 +137,6 @@ class Generator:
 def parse(code, generator=None):
     if generator is None:
         generator = Generator()
-
-    def varint(node):
-        if isinstance(node, list) or isinstance(node, Meta):
-            return node
-        if isinstance(node, str):
-            return [['__PUSH', node.value]]
-        if node.data == 'number':
-            if node.children[0].type == 'DEC_NUMBER':
-                return [    'PUSH %i' % int(node.children[0].value)]
-            raise Exception('Fail')
 
     class MyTransformer(Transformer):
 
