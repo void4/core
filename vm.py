@@ -4,7 +4,7 @@ WORDSIZE = 8*BYTESIZE
 WMAX = 2**WORDSIZE
 WMASK = WMAX-1
 
-from crypto import hashit, tob, fromb, genkey, verify
+from crypto import wrapint, hashit, tob, fromb, genkey, verify
 
 STATUS, REC, GAS, MEM, IP, CODE, STACK, MAP, MEMORY = range(9)
 F_STATUS, F_REC, F_GAS, F_MEM, F_IP, F_LENCODE, F_LENSTACK, F_LENMAP, F_LENMEMORY, F_CODE, F_STACK, F_MAP, F_MEMORY = range(13)
@@ -12,48 +12,49 @@ F_STATUS, F_REC, F_GAS, F_MEM, F_IP, F_LENCODE, F_LENSTACK, F_LENMAP, F_LENMEMOR
 NORMAL, FROZEN, VOLHALT, VOLRETURN, OOG, OOC, OOS, OOM, OOB, UOC, RECURSE = range(11)
 STATI = ["NORMAL", "FROZEN", "VOLHALT", "VOLRETURN", "OUTOFGAS", "OUTOFCODE", "OUTOFSTACK", "OUTOFMEMORY", "OUTOFBOUNDS", "UNKNOWNCODE", "RUN"]
 
-HALT, RETURN, YIELD, RUN, JUMP, JZ, PUSH, POP, DUP, FLIP, KEYSET, KEYGET, KEYDEL, STACKLEN, MEMORYLEN, AREALEN, READ, WRITE, AREA, DEAREA, ALLOC, DEALLOC, ADD, SUB, NOT, MUL, DIV, MOD, SHA256, ECVERIFY = range(30)
+HALT, RETURN, YIELD, RUN, JUMP, JZ, PUSH, POP, DUP, FLIP, KEYSET, KEYHAS, KEYGET, KEYDEL, STACKLEN, MEMORYLEN, AREALEN, READ, WRITE, AREA, DEAREA, ALLOC, DEALLOC, ADD, SUB, NOT, MUL, DIV, MOD, SHA256, ECVERIFY = range(31)
 
 REQS = [
-    # Name, Instruction length, Required Stack Size, Stack effect
-    ["HALT",1,0,0],
-    ["RETURN",1,0,0],
-    ["YIELD",1,0,0],
+    # Name, Instruction length, Required Stack Size, Stack effect, Gas cost
+    ["HALT",1,0,0,1],
+    ["RETURN",1,0,0,1],
+    ["YIELD",1,0,0,1],
 
-    ["RUN",1,3,-3],
+    ["RUN",1,3,-3,0],
 
-    ["JUMP",1,1,-1],
-    ["JZ",1,2,-2],
+    ["JUMP",1,1,-1,1],
+    ["JZ",1,2,-2,1],
 
-    ["PUSH",2,0,1],
-    ["POP",1,0,0],
-    ["DUP",1,0,1],
-    ["FLIP",1,2,0],
+    ["PUSH",2,0,1,2],
+    ["POP",1,0,0,2],
+    ["DUP",1,0,1,4],
+    ["FLIP",1,2,0,4],
 
-    ["KEYSET",1,2,-2],
-    ["KEYGET",1,1,0],
-    ["KEYDEL",1,1,-1],
+    ["KEYSET",1,2,-2,10],
+    ["KEYHAS",1,1,0,4],
+    ["KEYGET",1,1,0,6],
+    ["KEYDEL",1,1,-1,4],
 
-    ["STACKLEN",1,0,1],
-    ["MEMORYLEN",1,0,1],
-    ["AREALEN",1,1,0],
+    ["STACKLEN",1,0,1,2],
+    ["MEMORYLEN",1,0,1,2],
+    ["AREALEN",1,1,0,2],
 
-    ["READ",1,2,-1],
-    ["WRITE",1,3,-3],
+    ["READ",1,2,-1,2],
+    ["WRITE",1,3,-3,2],
 
-    ["AREA",1,0,1],
-    ["DEAREA",1,1,-1],#!use after free!
-    ["ALLOC",1,2,-2],
-    ["DEALLOC",1,2,-2],
+    ["AREA",1,0,1,10],
+    ["DEAREA",1,1,-1,10],#!use after free!
+    ["ALLOC",1,2,-2,10],
+    ["DEALLOC",1,2,-2,10],
 
-    ["ADD",1,2,-1],
-    ["SUB",1,2,-1],
-    ["NOT",1,1,0],
-    ["MUL",1,2,-1],
-    ["DIV",1,2,-1],
-    ["MOD",1,2,-1],
+    ["ADD",1,2,-1,6],
+    ["SUB",1,2,-1,6],
+    ["NOT",1,1,0,4],
+    ["MUL",1,2,-1,8],
+    ["DIV",1,2,-1,10],
+    ["MOD",1,2,-1,10],
 
-    ["SHA256",1,1,0],
+    ["SHA256",1,1,0,100],
 ]
 
 def s(state):
@@ -61,11 +62,13 @@ def s(state):
     flat = state[:CODE]
     flat += [len(state[CODE])]
     flat += [len(state[STACK])]
-    flat += [len(state[MAP]) * 2]
+    flat += [len(state[MAP])]
     flat += [len(state[MEMORY])]
     flat += state[CODE]
     flat += state[STACK]
-    for k,v in state[MAP]:
+    for i in range(0, len(state[MAP]), 2):
+        k = state[MAP][i]
+        v = state[MAP][i+1]
         flat += [k, v]
     for area in state[MEMORY]:
         flat += [len(area)]
@@ -83,7 +86,7 @@ def d(state):
     sharp.append(state[F_LENMEMORY+1:F_LENMEMORY+1+lencode])
     sharp.append(state[F_LENMEMORY+1+lencode:F_LENMEMORY+1+lencode+lenstack])
     hmap = state[F_LENMEMORY+1+lencode+lenstack:F_LENMEMORY+1+lencode+lenstack+lenmap]
-    hmap = list(zip(hmap[::2], hmap[1::2]))
+    #hmap = list(zip(hmap[::2], hmap[1::2]))
     sharp.append(hmap)
 
     sharp.append([])
@@ -212,6 +215,7 @@ def step(state):
                 p = ps[0]
 
                 # Compare memory use (combined, not separately)
+                # move this into reqs!
                 def getMemoryUse(instr):
                     # XXX maximum working size or end-start?
                     if instr == ALLOC:
@@ -221,8 +225,9 @@ def step(state):
                     else:
                         return 0
                 if instr != RUN:
-                    p[GAS] -= 1 # RUN RUN RUN?
-                    totalmemoryuse = reqs[3] + getMemoryUse(instr)
+                    gascost = reqs[4]
+                    p[GAS] -= gascost # RUN RUN RUN?#only subtract if not OOM down there!
+                    totalmemoryuse = len(s(state)) * gascost#reqs[3] + getMemoryUse(instr)
                 else:
                     totalmemoryuse = 0#not correct, run pops from stack, but not always
                 if p[MEM] < totalmemoryuse:
@@ -262,10 +267,12 @@ def step(state):
                     state[REC] = 0
                     next()
             else:
+                #checkresources here?
                 next()
         else:
             #print("".join(["<-|%s¦%i¦%i¦%s|" % (STATI[states[i][0][STATUS]], states[i][0][GAS], states[i][0][MEM], REQS[states[i][0][CODE][states[i][0][IP]]][0]) for i in range(len(states))]))
-
+            #CSV
+            print("".join(["%i;%i" % (states[i][0][GAS], states[i][0][MEM]) for i in range(len(states))]))
             if checkResources():
                 break
 
@@ -301,28 +308,40 @@ def step(state):
                 next()
             elif instr == KEYSET:
 
-                if hasmem(2):
-                    kv = (state[STACK][-2], state[STACK][-1])
-                    for i, (k,v) in enumerate(state[MAP]):
-                        if k == state[STACK][-2]:
-                            state[MAP][i] = kv
-                            state[MEM] -= 2
+                if hasmem(2):#or only exit if memory is actually needed?
+                    kv = [state[STACK][-2], state[STACK][-1]]
+                    for i in range(0, len(state[MAP]), 2):
+                        if state[MAP][i] == kv[0]:
+                            state[MAP][i+1] = kv[1]
                             break
                     else:
-                        state[MAP].append(kv)
+                        state[MAP] += kv
+                        state[MEM] -= 2
                     next()
+            elif instr == KEYHAS:
+                for i in range(0, len(state[MAP]), 2):
+                    if state[MAP][i] == state[STACK][-1]:
+                        state[STACK][-1] = 1
+                        break
+                else:
+                    state[STACK][-1] = 0
+                next()
             elif instr == KEYGET:
-                for i, (k,v) in enumerate(state[MAP]):
-                    if k == state[STACK][-1]:
-                        state[STACK][-1] = v
+                for i in range(0, len(state[MAP]), 2):
+                    if state[MAP][i] == state[STACK][-1]:
+                        state[STACK][-1] = state[MAP][i+1]
+                        break
+                else:
+                    state[STACK].pop(-1)
+                    state[MEM] += 1
                 next()
             elif instr == KEYDEL:
-                newmap = []
-                for i, (k,v) in enumerate(state[MAP]):
-                    if k != state[STACK][-1]:
-                        newmap.append((k,v))
+                for i in range(0, len(state[MAP]), 2):
+                    if state[MAP][i] == state[STACK][-1]:
+                        state[MAP].pop(i)
+                        state[MAP].pop(i)
                         state[MEM] += 2
-                state[MAP] = newmap
+                        break
                 next()
             elif instr == STACKLEN:
                 if push(len(state[STACK])):
@@ -438,10 +457,36 @@ def show(state):
     panel.image = img2
     root.update()
 
+numlines = 4
+stats = [[] for i in range(numlines)]
+
+import numpy as np
+import matplotlib.pyplot as plt
+
+fig, ax1 = plt.subplots()
+ax1.set_xlabel('step (c)')
+axes = [ax1]
+for i in range(numlines-2):
+    axes.append(axes[-1].twinx())
+
+labels = ["memsec", "gas", "statesize (words)"]
+colors = ["tab:red", "tab:blue", "tab:grey"]
+
+for i,ax in enumerate(axes):
+    ax.plot([], [], color=colors[i])
+    ax.set_ylabel(labels[i], color=colors[i])
+
+plt.pause(0.0001)
+
 def run(state, gas=100, mem=100, debug=False):
     state[STATUS] = NORMAL
     state[GAS] = gas
     state[MEM] = mem
+
+    #for i,ax in enumerate(axes):
+    #    ax.set_ylim([0,0,0][i], [gas*mem,gas,mem][i])
+
+    count = 0
     while True:
         #sleep(0.1)
         #show(state)
@@ -450,6 +495,19 @@ def run(state, gas=100, mem=100, debug=False):
         #t = timeit.timeit("step([0, 0, 1000, 1000, 0, 98, 0, 0, 3, 6, 1, 15, 8, 6, 1, 9, 6, 1, 6, 2, 20, 6, 1, 6, 8, 6, 1, 6, 8, 16, 6, 1, 22, 17, 6, 1, 17, 8, 6, 1, 22, 6, 1, 9, 14, 6, 1, 23, 6, 0, 16, 17, 7, 6, 1, 6, 50, 6, 50, 3, 6, 1, 6, 1, 15, 6, 1, 23, 16, 6, 1, 6, 2, 21, 6, 1, 6, 8, 6, 1, 6, 8, 16, 6, 1, 23, 17, 14, 6, 1, 23, 8, 8, 19, 18, 6, 1, 20, 9, 6, 0, 9, 17, 2, 6, 0, 4, 0, 37, 1, 0, 0, 0, 0, 27, 0, 0, 1, 14, 6, 1, 23, 6, 0, 16, 6, 1, 22, 14, 6, 1, 23, 8, 8, 19, 18, 6, 1, 20, 9, 6, 0, 9, 17, 1, 0, 1, 1])", "from vm import step", number=100000)
         #print(t)
         #print(d(state)[MEMORY])
+        stats[0].append(count)
+        stats[1].append(state[MEM])
+        stats[2].append(state[GAS])
+        stats[3].append(len(state))
+        for i in range(1,4):
+            ax = axes[i-1]
+            ax.lines[0].set_xdata(stats[0])#stats[2]
+            ax.lines[0].set_ydata(stats[i])
+
+            ax.relim()
+            ax.autoscale_view()
+        #plt.pause(0.0000001)
+        fig.canvas.draw()
         if state[STATUS] not in [NORMAL, RECURSE]:
             if debug:
                 dstate = d(state)
@@ -461,4 +519,5 @@ def run(state, gas=100, mem=100, debug=False):
             out = d(state)
             #print(out[STACK], out[MEMORY])
             #sleep(0.1)
+        count += 1
     return state

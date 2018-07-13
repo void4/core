@@ -11,11 +11,11 @@ from vm import run, annotated, d, s, STATUS, MEMORY, VOLRETURN
 # Run state
 from vmutils import minify
 minify(state)
-
+print(state)
 while True:
     state = d(state)
-
-    inp = input("Ready>")
+    print("supplying input")
+    inp = "0"#input("Ready>")
     if len(inp):
         state[MEMORY].append([int(inp)])
     else:
@@ -24,7 +24,7 @@ while True:
     print(state)
     state = s(state)
 
-    state = run(state, 1000, 1000, debug=False)
+    state = run(state, 10000, 1000000, debug=False)
 
     state = d(state)
     if state[STATUS] == VOLRETURN:
