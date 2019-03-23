@@ -1,4 +1,5 @@
-from lark import Lark, Tree, Transformer
+from lark.lark import Lark, Tree
+from lark.visitors import Transformer
 from assembler import assemble
 from vm import d, s, STACK, MEMORY
 import inspect
