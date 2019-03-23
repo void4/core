@@ -1,0 +1,6 @@
+struct Pair:
+    word a
+    word b
+
+x = 2
+n

@@ -1,0 +1,11 @@
+macro test:
+    a = 1
+
+expand test
+
+a = "test"
+a = "bla"
+a = 1
+a = $arealen(0)
+while 1 == 1:
+    a = a

@@ -1,0 +1,10 @@
+up("/io/stdout", "Hello world!")
+io.stdout("Hello world!")
+::io:stdout
+|io
+io->stdout()
+<io/stdout("Hello world!")
+
+a = "Hello world"
+
+f = function(a:x,b:y ->

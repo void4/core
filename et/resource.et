@@ -1,0 +1,6 @@
+struct Pair:
+    word a
+    word b
+
+def run(f):
+    f

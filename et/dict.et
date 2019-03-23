@@ -1,0 +1,16 @@
+i = 0
+key = 0
+while i != 10:
+    $keyset(key, 42)
+    a = $keyget(key)
+    b = $keyhas(key)
+    $keydel(key)
+    c = $keyhas(key)
+    $alloc(0, 64)
+    d = $keyhas(1)
+    i = i + 1
+    f = 0
+    while f != 5:
+        $alloc(0,12)
+        f = f + 1
+        g = $sha256(f)

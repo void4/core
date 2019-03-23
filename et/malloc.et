@@ -1,0 +1,15 @@
+len = 10
+a = $malloc(len)
+
+i = 0
+while i != len:
+    $write(0, a+i, i+1)
+    i = i + 1
+    c = i-len
+
+c = 234
+
+key = 2
+$keyset(key,2)
+c = $keyget(key)
+$keydel(key)

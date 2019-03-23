@@ -1,0 +1,4 @@
+macro lol:
+    a = 1
+
+expand lol
