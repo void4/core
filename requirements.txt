@@ -1,2 +1,6 @@
 lark-parser
 ecdsa
+Pillow
+tkinter
+numpy
+matplotlib
